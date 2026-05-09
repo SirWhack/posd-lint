@@ -1,0 +1,2 @@
+[forbidden_imports]
+"app/domain/**" = ["sqlalchemy", "requests"]

@@ -23,7 +23,7 @@ from typing import Optional
 
 from posd_lint.findings import Finding, JudgeVerdict
 from posd_lint.judge.prompts import (
-    SYSTEM_PROMPT,
+    build_system_prompt,
     build_user_prompt,
     index_sections,
     load_rubric,
@@ -61,6 +61,7 @@ class ClaudeJudge:
             else load_rubric()
         )
         self.sections = index_sections(rubric)
+        self._system_prompt = build_system_prompt(rubric)
         self._client = _build_client()
 
     def judge(self, finding: Finding) -> Finding:
@@ -70,8 +71,7 @@ class ClaudeJudge:
         finding is returned with judge_verdict=UNJUDGED and the failure recorded
         in judge_reasoning. We never crash the run for a single bad finding.
         """
-        section = self.sections.get(finding.rubric_ref)
-        if section is None:
+        if finding.rubric_ref not in self.sections:
             finding.judge_reasoning = f"No rubric section §{finding.rubric_ref} found."
             return finding
 
@@ -81,7 +81,7 @@ class ClaudeJudge:
             evidence=finding.evidence,
             file_path=finding.file,
             line=finding.line,
-            rubric_section=section,
+            rubric_section_number=finding.rubric_ref,
             code_excerpt=finding.code_excerpt or "(no excerpt)",
         )
 
@@ -113,7 +113,13 @@ class ClaudeJudge:
         msg = self._client.messages.create(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
-            system=SYSTEM_PROMPT,
+            system=[
+                {
+                    "type": "text",
+                    "text": self._system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             messages=[{"role": "user", "content": user_prompt}],
         )
         return msg.content[0].text

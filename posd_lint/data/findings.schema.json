@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/posd-lint/findings.schema.json",
+  "title": "posd-lint findings",
+  "description": "Output of `posd-lint --format json`. A JSON array of Finding records. Each Finding describes one candidate PoSD red flag, optionally annotated by an AI judge.",
+  "type": "array",
+  "items": { "$ref": "#/definitions/Finding" },
+  "definitions": {
+    "Finding": {
+      "type": "object",
+      "required": [
+        "file",
+        "line",
+        "detector",
+        "title",
+        "evidence",
+        "rubric_ref",
+        "rubric_title",
+        "severity",
+        "judge_verdict"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the source file relative to the scan root."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "1-indexed line number of the start of the offending construct."
+        },
+        "end_line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "1-indexed end line; null when the finding is a single line."
+        },
+        "detector": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable detector id, e.g. \"shallow_class\"."
+        },
+        "title": {
+          "type": "string",
+          "description": "One-line headline for the finding."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "The specific deterministic measurement that triggered the finding (e.g. \"21 public methods\")."
+        },
+        "rubric_ref": {
+          "type": "string",
+          "description": "Section reference into posd-reference.md, e.g. \"5\" or \"12.3\"."
+        },
+        "rubric_title": {
+          "type": "string",
+          "description": "Human-readable title of the rubric section."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "low", "medium", "high"]
+        },
+        "code_excerpt": {
+          "type": "string",
+          "description": "Source snippet around line..end_line. Empty string if not captured."
+        },
+        "judge_verdict": {
+          "type": "string",
+          "enum": ["unjudged", "real", "borderline", "false_positive"],
+          "description": "AI judge's verdict; \"unjudged\" when --ai-judge=none."
+        },
+        "judge_reasoning": {
+          "type": "string",
+          "description": "Judge's rationale for the verdict. Empty when unjudged."
+        },
+        "judge_recommendation": {
+          "type": "string",
+          "description": "Concrete refactoring recommendation from the judge. Empty when unjudged."
+        }
+      }
+    }
+  }
+}

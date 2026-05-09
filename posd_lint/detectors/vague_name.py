@@ -9,7 +9,8 @@ domain-appropriate short name.
 from __future__ import annotations
 
 import ast
-from typing import Iterable
+import re
+from typing import Iterable, Optional
 
 from posd_lint.detectors._base import Detector, register
 from posd_lint.findings import Finding, Severity
@@ -28,6 +29,29 @@ GENERIC_NAMES = frozenset({
 
 # Names that show "I couldn't think of one, so I numbered it." Strong signal.
 NUMBERED_SUFFIX_HINT = "1234567890"
+
+# Versioning / replacement suffixes — "I made another one and didn't rename
+# the original": process_v2, handler_new, parse_actually, foo_old, x_tmp.
+# Matched on snake_case identifiers; trailing digits also picked up via _v\d+.
+VERSIONED_SUFFIX_RE = re.compile(
+    r"_(v\d+|new|old|actual|actually|final|real|fixed|tmp)$",
+    re.IGNORECASE,
+)
+
+# CamelCase suffix variant: "User2", "RequestV2".
+CAMEL_VERSIONED_SUFFIX_RE = re.compile(r"(V\d+|\d+)$")
+
+# Word-as-prefix on otherwise-generic stems: real_data, final_result,
+# actual_user, new_thing. Same "differentiating without saying how" smell.
+VERSIONED_PREFIX_RE = re.compile(
+    r"^(real|final|actual|new|old|tmp|fixed)_",
+    re.IGNORECASE,
+)
+
+# "Adjective-only" suffixes Ousterhout calls out: foo_helper, render_utility.
+# Their information content is zero — the suffix says "this exists" and nothing
+# more. Restricted to functions; classes named `*Helper` are too entrenched.
+ADJECTIVE_SUFFIX_RE = re.compile(r"_(helper|utility|utilities|helpers)$", re.IGNORECASE)
 
 
 @register
@@ -65,23 +89,91 @@ class VagueNameDetector(Detector):
     def _check(self, file: ParsedFile, name: str, line: int, kind: str) -> Iterable[Finding]:
         lower = name.lower()
         if lower in self.generic_names:
-            yield self._make_finding(file, name, line, kind, reason=f"generic name '{name}'")
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Vague {kind} name: {name!r}",
+                reason=f"generic name '{name}'",
+            )
             return
         # Numbered-suffix on a generic stem: data1, data2, result_v2 …
         if any(lower.startswith(g) and len(lower) > len(g) and lower[len(g)] in NUMBERED_SUFFIX_HINT
                for g in self.generic_names):
-            yield self._make_finding(file, name, line, kind, reason=f"numbered generic name '{name}'")
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Vague {kind} name: {name!r}",
+                reason=f"numbered generic name '{name}'",
+            )
+            return
+        # Versioned identifier: process_v2, handler_new, User2, RequestV3 …
+        # Says "this is a different one" without saying *how* it differs.
+        versioned_marker = self._versioned_marker(name)
+        if versioned_marker is not None:
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Versioned identifier: {name!r}",
+                reason=f"versioned suffix '{versioned_marker}' — encodes 'another one' without saying how it differs",
+            )
+            return
+        # Word-as-prefix counterpart: real_data, final_result, actual_user.
+        prefix_match = VERSIONED_PREFIX_RE.match(name)
+        if prefix_match:
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Differentiating-without-content prefix: {name!r}",
+                reason=f"prefix '{prefix_match.group(1).lower()}_' implies a contrast that the name doesn't describe",
+            )
+            return
+        # Adjective-only suffix on a function: foo_helper, render_utility.
+        if kind == "function" and ADJECTIVE_SUFFIX_RE.search(name):
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Differentiating-without-content suffix: {name!r}",
+                reason="suffix 'helper'/'utility' adds no information about what the function does",
+            )
             return
         # Single-letter names outside obvious loop counters at top of file scope.
         if len(name) == 1 and name not in ("i", "j", "k", "x", "y", "z", "_") and kind != "parameter":
-            yield self._make_finding(file, name, line, kind, reason=f"single-letter name '{name}'")
+            yield self._make_finding(
+                file, name, line, kind,
+                title=f"Vague {kind} name: {name!r}",
+                reason=f"single-letter name '{name}'",
+            )
 
-    def _make_finding(self, file: ParsedFile, name: str, line: int, kind: str, reason: str) -> Finding:
+    def _versioned_marker(self, name: str) -> Optional[str]:
+        """Return the matched suffix if `name` looks versioned, else None.
+
+        Snake_case suffixes (`_v2`, `_new`, `_actually`) match anywhere a
+        snake suffix is plausible. CamelCase suffixes (`User2`, `RequestV3`)
+        match only when the stem is meaningfully present — we don't want to
+        flag genuine domain names that happen to end in a digit (e.g. `Sha256`
+        is not "Sha2 v56"). The heuristic: the stem must contain a lowercase
+        letter, ruling out short uppercase acronyms.
+        """
+        m = VERSIONED_SUFFIX_RE.search(name)
+        if m:
+            return m.group(0)
+        m2 = CAMEL_VERSIONED_SUFFIX_RE.search(name)
+        if m2:
+            stem = name[: m2.start()]
+            if stem and stem[0].isupper() and any(c.islower() for c in stem):
+                return m2.group(0)
+        return None
+
+    def _make_finding(
+        self,
+        file: ParsedFile,
+        name: str,
+        line: int,
+        kind: str,
+        *,
+        title: str,
+        reason: str,
+    ) -> Finding:
         return Finding(
             file=file.path,
             line=line,
             detector=self.name,
-            title=f"Vague {kind} name: {name!r}",
+            title=title,
             evidence=reason,
             rubric_ref=self.rubric_ref,
             rubric_title=self.rubric_title,

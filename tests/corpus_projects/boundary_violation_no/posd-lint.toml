@@ -1,0 +1,7 @@
+[layers]
+domain = ["pkg/domain/**"]
+infra = ["pkg/infra/**"]
+
+[allowed_imports]
+domain = []
+infra = ["domain"]

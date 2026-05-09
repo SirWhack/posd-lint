@@ -20,7 +20,7 @@ posd-lint path/to/your/code
 # Save to file
 posd-lint path/to/your/code --output report.md
 
-# JSON output (for tooling)
+# JSON output (for tooling) — schema at posd_lint/data/findings.schema.json
 posd-lint path/to/your/code --format json --output report.json
 
 # With Claude judging each finding

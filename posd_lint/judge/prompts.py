@@ -1,9 +1,9 @@
 """Prompt construction and rubric-section extraction for the AI judge.
 
-The rubric sections live in posd-reference.md (shipped as package data).
-We parse them once at startup, build an index by section number, and give
-the judge only the relevant section for each finding — not the whole doc.
-That keeps the prompt small and the model's attention on the right rule.
+The full PoSD rubric is loaded once at import time and embedded in the
+system prompt. Anthropic prompt caching makes this ~free after the first
+call: the rubric is the cached prefix, and per-finding user prompts just
+reference the relevant section by number.
 """
 
 from __future__ import annotations
@@ -44,26 +44,37 @@ def index_sections(rubric: str) -> dict[str, str]:
     return out
 
 
-SYSTEM_PROMPT = """\
+_PERSONA = """\
 You are a code reviewer applying John Ousterhout's "A Philosophy of Software Design" principles.
 
 A deterministic detector has flagged something in real code. Your job is to:
 1. Decide whether the finding is genuinely a problem ("real"), arguable ("borderline"), or noise ("false_positive").
-2. Write a short, concrete recommendation grounded in the rubric section provided.
+2. Write a short, concrete recommendation grounded in the cited rubric section.
 
 Decision rules:
-- Use ONLY the rubric section provided. Do not invoke principles from outside that section.
+- Use ONLY the rubric section cited in the user prompt. Do not invoke principles from outside that section.
 - Real: the rubric clearly applies and the code violates it.
 - Borderline: the rubric applies but the code has reasonable justification, or the violation is mild.
 - False positive: the detector's heuristic misfired; this is fine code or not what the rubric is about.
 
+The complete PoSD rubric follows. Each top-level numbered section ('## N. Title') is the unit you will be asked to apply."""
+
+
+_SCHEMA = """\
 Output strict JSON only — no markdown fences, no commentary outside the JSON:
 {
   "verdict": "real" | "borderline" | "false_positive",
   "reasoning": "One sentence. Cite the rubric.",
   "recommendation": "2-4 sentences. Reference specific identifiers from the code excerpt. If false_positive, leave empty string."
-}
-"""
+}"""
+
+
+def build_system_prompt(rubric: str) -> str:
+    """Assemble the full system prompt: persona + rubric + output schema."""
+    return f"{_PERSONA}\n\n{rubric}\n\n{_SCHEMA}"
+
+
+SYSTEM_PROMPT = build_system_prompt(load_rubric())
 
 
 def build_user_prompt(
@@ -73,15 +84,16 @@ def build_user_prompt(
     evidence: str,
     file_path: str,
     line: int,
-    rubric_section: str,
+    rubric_section_number: str,
     code_excerpt: str,
 ) -> str:
-    """Assemble the per-finding user message for the judge."""
-    return f"""\
-RUBRIC SECTION:
-{rubric_section}
+    """Assemble the per-finding user message for the judge.
 
----
+    The rubric section itself lives in the cached system prompt; here we
+    only reference it by number so the model knows which one to apply.
+    """
+    return f"""\
+Apply §{rubric_section_number} to the following finding.
 
 CODE EXCERPT ({file_path}:{line}):
 ```python
@@ -94,5 +106,5 @@ DETECTOR: {detector_name}
 TITLE: {finding_title}
 EVIDENCE: {evidence}
 
-Apply the rubric. Verdict?
+Verdict?
 """

@@ -13,21 +13,30 @@ from pathlib import Path
 
 import pytest
 
+from posd_lint.config import load_config
 from posd_lint.detectors import (
+    boundary_violation,
     comment_repeats_code,
     config_explosion,
     conjoined_methods,
+    cyclomatic_complexity,
+    duplicate_code,
+    forbidden_import,
     forwarded_parameter,
     hard_to_describe,
+    import_cycle,
     impl_leaks_into_interface,
     info_leakage,
     overexposure,
     pass_through_method,
+    pass_through_variable,
+    pure_function_violation,
     repurposed_variable,
     required_call_ordering,
     shallow_class,
     special_general_mixture,
     temporal_decomposition,
+    unstable_interface,
     vague_name,
     wide_interface,
 )
@@ -63,6 +72,9 @@ def _run(detector, file_path: Path) -> int:
     # Phase 3 (per-file)
     (forwarded_parameter, "forwarded_parameter_positive.py", "forwarded_parameter_negative.py"),
     (required_call_ordering, "required_call_ordering_positive.py", "required_call_ordering_negative.py"),
+    # Phase 4 (per-file)
+    (duplicate_code, "duplicate_code_positive.py", "duplicate_code_negative.py"),
+    (cyclomatic_complexity, "cyclomatic_complexity_positive.py", "cyclomatic_complexity_negative.py"),
 ])
 def test_detector_positive_and_negative(module, positive: str, negative: str) -> None:
     """Each detector flags its positive corpus and stays silent on the negative."""
@@ -144,9 +156,124 @@ def test_temporal_decomposition_positive() -> None:
 
 
 def test_info_leakage_positive() -> None:
-    """Ticket schema read across 4 external files with 4 distinct attrs flags."""
+    """Ticket schema read across 4 external files with 4 distinct attrs flags.
+
+    Also asserts the inferred-receiver-type path: Order is leaked through
+    `for o in repo.list_orders()` and `o = fetch_order()` callsites that
+    rely on return-annotation inference, not direct `Order(...)` construction.
+    """
     detector = info_leakage.InfoLeakageDetector()
     project = _project_for("info_leakage_yes")
     findings = list(detector.detect_project(project))
-    assert findings
-    assert "Ticket" in findings[0].title
+    titles = [f.title for f in findings]
+    assert any("Ticket" in t for t in titles), titles
+    assert any("Order" in t for t in titles), titles
+
+
+def test_import_cycle_positive() -> None:
+    """a -> b -> c -> a should produce one cycle finding listing all three files."""
+    detector = import_cycle.ImportCycleDetector()
+    project = _project_for("import_cycle_yes")
+    findings = list(detector.detect_project(project))
+    assert len(findings) == 1, f"expected exactly one cycle; got {[f.title for f in findings]}"
+    finding = findings[0]
+    assert "a.py" in finding.file
+    assert "b.py" in finding.evidence
+    assert "c.py" in finding.evidence
+
+
+def test_import_cycle_negative() -> None:
+    """A linear x -> y -> z chain has no cycle."""
+    detector = import_cycle.ImportCycleDetector()
+    project = _project_for("import_cycle_no")
+    findings = list(detector.detect_project(project))
+    assert not findings, f"unexpected findings: {[f.title for f in findings]}"
+
+
+def test_pass_through_variable_positive() -> None:
+    """outer -> middle -> leaf, where only leaf reads the param, must flag outer."""
+    detector = pass_through_variable.PassThroughVariableDetector()
+    project = _project_for("pass_through_variable_yes")
+    findings = list(detector.detect_project(project))
+    assert findings, "expected pass-through finding on outer_fn"
+    assert any("outer_fn" in f.title for f in findings), \
+        f"expected outer_fn in titles; got {[f.title for f in findings]}"
+
+
+def test_pass_through_variable_negative() -> None:
+    """When middle reads or transforms the param, no pass-through finding."""
+    detector = pass_through_variable.PassThroughVariableDetector()
+    project = _project_for("pass_through_variable_no")
+    findings = list(detector.detect_project(project))
+    assert not findings, f"unexpected findings: {[f.title for f in findings]}"
+
+
+def test_forbidden_import_positive() -> None:
+    """A domain file importing sqlalchemy under a banning rule must flag."""
+    config = load_config(CORPUS_PROJECTS / "forbidden_import_yes")
+    detector = forbidden_import.ForbiddenImportDetector(config=config)
+    project = _project_for("forbidden_import_yes")
+    findings = list(detector.detect_project(project))
+    assert findings, "expected forbidden_import finding"
+    assert any("sqlalchemy" in f.title for f in findings), \
+        f"expected sqlalchemy in titles; got {[f.title for f in findings]}"
+
+
+def test_forbidden_import_negative() -> None:
+    """Same rule, but the file imports nothing forbidden."""
+    config = load_config(CORPUS_PROJECTS / "forbidden_import_no")
+    detector = forbidden_import.ForbiddenImportDetector(config=config)
+    project = _project_for("forbidden_import_no")
+    findings = list(detector.detect_project(project))
+    assert not findings, f"unexpected findings: {[f.title for f in findings]}"
+
+
+def test_boundary_violation_positive() -> None:
+    """domain importing infra with allowed_imports.domain=[] must flag."""
+    config = load_config(CORPUS_PROJECTS / "boundary_violation_yes")
+    detector = boundary_violation.BoundaryViolationDetector(config=config)
+    project = _project_for("boundary_violation_yes")
+    findings = list(detector.detect_project(project))
+    assert findings, "expected boundary violation finding"
+    assert any("domain" in f.title and "infra" in f.title for f in findings), \
+        f"expected domain->infra in titles; got {[f.title for f in findings]}"
+
+
+def test_boundary_violation_negative() -> None:
+    """Same layer config, but domain imports nothing from infra."""
+    config = load_config(CORPUS_PROJECTS / "boundary_violation_no")
+    detector = boundary_violation.BoundaryViolationDetector(config=config)
+    project = _project_for("boundary_violation_no")
+    findings = list(detector.detect_project(project))
+    assert not findings, f"unexpected findings: {[f.title for f in findings]}"
+
+
+def test_pure_function_violation_positive() -> None:
+    """Functions named calculate_/parse_/format_ that have effects must flag."""
+    detector = pure_function_violation.PureFunctionViolationDetector()
+    project = _project_for("pure_function_violation_yes")
+    findings = list(detector.detect_project(project))
+    assert findings, "expected pure_function_violation finding"
+    titles = [f.title for f in findings]
+    assert any("calculate_total" in t for t in titles), f"expected calculate_total; got {titles}"
+
+
+def test_pure_function_violation_negative() -> None:
+    """The same prefixes with pure bodies must not flag."""
+    detector = pure_function_violation.PureFunctionViolationDetector()
+    project = _project_for("pure_function_violation_no")
+    findings = list(detector.detect_project(project))
+    assert not findings, f"unexpected findings: {[f.title for f in findings]}"
+
+
+def test_unstable_interface_positive() -> None:
+    """A class with importers >= threshold and no Protocol/ABC base flags;
+    its sibling Protocol with the same importer count does not."""
+    detector = unstable_interface.UnstableInterfaceDetector(threshold=3)
+    project = _project_for("unstable_interface_yes")
+    findings = list(detector.detect_project(project))
+    titles = [f.title for f in findings]
+    assert any("BigService" in t and "BigServiceProtocol" not in t for t in titles), \
+        f"expected BigService finding; got {titles}"
+    assert not any("BigServiceProtocol" in t for t in titles), \
+        f"BigServiceProtocol should not flag; got {titles}"
